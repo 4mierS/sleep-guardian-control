@@ -1,36 +1,73 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Sleep Guardian — Control-Plane
 
-## Getting Started
+Vermittler zwischen der Windows-Tray-App (`sleep-guardian`) und dem Handy.
+Der PC baut die Verbindung immer selbst nach außen auf und fragt alle 5s
+nach Befehlen — es geht nie eine Verbindung von außen auf den PC, also
+keine Portfreigabe im Router.
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+Handy  ──HTTPS──▶  Control-Plane (Next.js + Postgres)  ◀──HTTPS──  PC
+       schreibt        Befehls-Queue + Status              fragt alle 5s ab
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Endpunkte
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Route | Wer | Zweck |
+|---|---|---|
+| `POST /api/agent/heartbeat` | PC (Agent-Token) | meldet Status, holt offene Befehle ab |
+| `GET /api/machines` | Handy (User-Token) | Status aller Maschinen |
+| `POST /api/machines/[id]/commands` | Handy (User-Token) | Befehl in die Queue legen |
+| `/control` | Handy | Oberfläche, als PWA installierbar |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Zwei getrennte Token: der Agent-Token darf ausschließlich Status melden
+und Befehle abholen, niemals welche anlegen. In der Datenbank liegen nur
+SHA-256-Hashes.
 
-## Learn More
+## Umgebungsvariablen
 
-To learn more about Next.js, take a look at the following resources:
+| Variable | Bedeutung |
+|---|---|
+| `DATABASE_URL` | Postgres-Verbindung |
+| `GUARDIAN_USER_TOKEN` | Zugangscode fürs Handy |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Lokal entwickeln
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm install
+cp .env.example .env      # DATABASE_URL auf eine lokale Postgres zeigen lassen
+npx prisma migrate dev
+npm run dev
+```
 
-## Deploy on Vercel
+## Deploy
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Das `Dockerfile` baut ein standalone-Image. Beim Containerstart spielt
+`docker-entrypoint.sh` erst `prisma migrate deploy` ein und startet dann
+den Server — schlägt die Migration fehl, startet die App bewusst gar
+nicht erst.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+In Coolify als Ressource vom Typ **Dockerfile** anlegen, Port 3000, die
+beiden Variablen oben setzen.
+
+## Maschine registrieren
+
+Legt eine Maschine an und gibt den Agent-Token **einmalig** aus:
+
+```bash
+npx tsx scripts/register-machine.ts "Desktop"
+```
+
+Die Ausgabe kommt in die `.env` der Tray-App am PC.
+
+## Prisma 7
+
+Der Client wird als Quelldateien nach `app/generated/prisma` erzeugt
+(nicht nach `node_modules`) und ist deshalb nicht eingecheckt — `prisma
+generate` läuft im Docker-Build. Die Connection-URL steht in
+`prisma.config.ts`, nicht mehr im `datasource`-Block.
+
+## Was nicht geht: Aufwecken
+
+Software kann einen schlafenden PC nicht aufwecken. Dafür bräuchte es
+Wake-on-LAN, und das Magic Packet muss aus dem Heimnetz kommen — ein
+Server im Rechenzentrum kann das grundsätzlich nicht leisten.

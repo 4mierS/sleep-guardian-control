@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Prisma 7 erzeugt den Client als Quelldateien - wird im Build generiert.
+/app/generated
+
+# Die Beispieldatei soll ins Repo.
+!.env.example
