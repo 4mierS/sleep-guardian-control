@@ -26,9 +26,11 @@ model Machine {
   action       String    @default("sleep") // sleep | shutdown
   lastSeenAt   DateTime?
 
-  commands  MachineCommand[]
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
+  commands     MachineCommand[]
+  pairingCodes PairingCode[]
+  devices      DevicePairing[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
   @@map("machines")
 }
@@ -48,4 +50,60 @@ model MachineCommand {
 
   @@index([machineId, consumedAt])
   @@map("machine_commands")
+}
+
+/// Einmal-Code, den die Tray-App als QR anzeigt. Kurzlebig und genau einmal
+/// einlösbar — er ist der Beweis, dass jemand physisch am PC saß.
+model PairingCode {
+  id        String  @id @default(cuid())
+  machineId String
+  machine   Machine @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 des Codes. Der Klartext existiert nur im QR auf dem Bildschirm.
+  codeHash String @unique
+
+  expiresAt DateTime
+  /// Gesetzt beim Einlösen ODER wenn ein neuerer Code den alten entwertet.
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([machineId, usedAt])
+  @@map("pairing_codes")
+}
+
+/// Ein gekoppeltes Handy. Die Session steckt in einem HttpOnly-Cookie,
+/// in der DB liegt nur der Hash — gleiches Prinzip wie beim Agent-Token.
+model Device {
+  id   String @id @default(cuid())
+  name String
+
+  /// Beim Widerruf auf NULL gesetzt, damit der Token wirklich tot ist und
+  /// nicht bloß markiert. Postgres erlaubt beliebig viele NULLs im
+  /// Unique-Index — mehrere widerrufene Geräte kollidieren also nicht.
+  sessionHash String? @unique
+
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime?
+  /// Widerrufen statt gelöscht, damit man in der Liste sieht, dass ein
+  /// Gerät rausgeflogen ist, statt dass es spurlos verschwindet.
+  revokedAt  DateTime?
+
+  machines DevicePairing[]
+
+  @@map("devices")
+}
+
+/// Welches Gerät darf welche Maschine steuern. Eigene Tabelle, damit ein
+/// Handy mit EINEM Cookie mehrere Rechner steuern kann.
+model DevicePairing {
+  deviceId  String
+  machineId String
+  device    Device  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  machine   Machine @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  pairedAt DateTime @default(now())
+
+  @@id([deviceId, machineId])
+  @@index([machineId])
+  @@map("device_pairings")
 }

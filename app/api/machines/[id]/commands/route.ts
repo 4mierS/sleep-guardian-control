@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
-import { isAuthorizedUser } from "@/lib/guardian-auth";
+import {
+  authenticateDevice,
+  devicePairedWith,
+  isSameOrigin,
+} from "@/lib/guardian-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +28,23 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  if (!isAuthorizedUser(req)) {
+  if (!isSameOrigin(req)) {
+    return NextResponse.json({ error: "bad origin" }, { status: 403 });
+  }
+
+  const device = await authenticateDevice();
+  if (!device) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const { id } = await params;
+
+  // 404 statt 403, damit sich die Existenz einer fremden Maschine nicht
+  // an der Antwort ablesen lässt — dieselbe Antwort wie unten für "gibt es
+  // gar nicht".
+  if (!devicePairedWith(device, id)) {
+    return NextResponse.json({ error: "machine not found" }, { status: 404 });
+  }
 
   let body: { type?: string; minutes?: number; action?: string };
   try {

@@ -1,18 +1,21 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { isAuthorizedUser } from "@/lib/guardian-auth";
+import { authenticateDevice } from "@/lib/guardian-auth";
 
 export const dynamic = "force-dynamic";
 
 /** Wenn der letzte Heartbeat älter als das ist, gilt der PC als offline. */
 const OFFLINE_AFTER_MS = 30_000;
 
-export async function GET(req: Request) {
-  if (!isAuthorizedUser(req)) {
+export async function GET() {
+  const device = await authenticateDevice();
+  if (!device) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const machines = await prisma.machine.findMany({
+    // Nur die Rechner, für die dieses Gerät gekoppelt wurde.
+    where: { id: { in: device.machines.map((m) => m.machineId) } },
     orderBy: { name: "asc" },
     select: {
       id: true,

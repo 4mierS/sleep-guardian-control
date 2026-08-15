@@ -3,7 +3,7 @@
   "short_name": "Guardian",
   "description": "Fernsteuerung für den Standby-Wächter am PC",
   "start_url": "/control",
-  "scope": "/control",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#131A22",

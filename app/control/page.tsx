@@ -27,47 +27,62 @@ const STATE_META: Record<MachineState, { label: string; tone: string }> = {
   offline: { label: "Nicht erreichbar", tone: "offline" },
 };
 
-const TOKEN_KEY = "guardian.token";
+interface Device {
+  id: string;
+  name: string;
+  isSelf: boolean;
+  createdAt: string;
+  lastSeenAt: string | null;
+  machines: string[];
+}
 
 export default function ControlPage() {
-  const [token, setToken] = useState<string | null>(null);
-  const [tokenDraft, setTokenDraft] = useState("");
+  // Die Anmeldung steckt im HttpOnly-Cookie und ist für dieses Skript
+  // unsichtbar. "Nicht gekoppelt" erkennen wir allein an der 401.
+  const [paired, setPaired] = useState<boolean | null>(null);
   const [machines, setMachines] = useState<Machine[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    setToken(window.localStorage.getItem(TOKEN_KEY));
+  const loadDevices = useCallback(async () => {
+    try {
+      const res = await fetch("/api/devices", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { devices: Device[] };
+      setDevices(data.devices);
+    } catch {
+      /* Geräteliste ist Beiwerk – Fehler hier nicht anzeigen. */
+    }
   }, []);
 
   const load = useCallback(async () => {
-    if (!token) return;
     try {
       const res = await fetch("/api/machines", {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: "same-origin",
         cache: "no-store",
       });
       if (res.status === 401) {
-        setError("Zugangscode stimmt nicht. Bitte neu eingeben.");
-        window.localStorage.removeItem(TOKEN_KEY);
-        setToken(null);
+        setPaired(false);
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { machines: Machine[] };
       setMachines(data.machines);
+      setPaired(true);
       setError(null);
     } catch {
       setError("Server nicht erreichbar.");
     }
-  }, [token]);
+  }, []);
 
   // Nur pollen, solange die App sichtbar ist – spart Handy-Akku.
   useEffect(() => {
-    if (!token) return;
-
     const start = () => {
       load();
       pollRef.current = setInterval(load, 3000);
@@ -86,21 +101,22 @@ export default function ControlPage() {
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [token, load]);
+  }, [load]);
+
+  useEffect(() => {
+    if (paired) loadDevices();
+  }, [paired, loadDevices]);
 
   async function send(
     machineId: string,
     body: Record<string, unknown>
   ) {
-    if (!token) return;
     setBusyId(machineId);
     try {
       const res = await fetch(`/api/machines/${machineId}/commands`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -113,41 +129,53 @@ export default function ControlPage() {
     }
   }
 
-  function saveToken() {
-    const t = tokenDraft.trim();
-    if (!t) return;
-    window.localStorage.setItem(TOKEN_KEY, t);
-    setToken(t);
-    setTokenDraft("");
-    setError(null);
+  async function revokeDevice(id: string, isSelf: boolean) {
+    setBusyId(id);
+    try {
+      const res = await fetch(`/api/devices/${id}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (isSelf) {
+        setPaired(false);
+        return;
+      }
+      await loadDevices();
+    } catch {
+      setError("Gerät konnte nicht abgemeldet werden.");
+    } finally {
+      setBusyId(null);
+    }
   }
 
-  if (!token) {
+  if (paired === null) {
+    return (
+      <>
+        <Styles />
+        <main className="sg-shell sg-shell--center">
+          <p className="sg-gate-hint">Lädt …</p>
+        </main>
+      </>
+    );
+  }
+
+  if (!paired) {
     return (
       <>
         <Styles />
         <main className="sg-shell sg-shell--center">
           <div className="sg-gate">
             <p className="sg-eyebrow">Sleep Guardian</p>
-            <h1 className="sg-gate-title">Zugangscode eingeben</h1>
+            <h1 className="sg-gate-title">Gerät nicht gekoppelt</h1>
             <p className="sg-gate-hint">
-              Der Code steht in der <code>.env</code> deines Servers unter{" "}
-              <code>GUARDIAN_USER_TOKEN</code>.
+              Dieses Gerät ist nicht (mehr) mit einem Rechner gekoppelt. Öffne am
+              PC das Tray-Menü, wähle <strong>Handy koppeln</strong> und scanne
+              den QR-Code.
             </p>
-            <input
-              className="sg-input"
-              type="password"
-              inputMode="text"
-              autoComplete="current-password"
-              value={tokenDraft}
-              onChange={(e) => setTokenDraft(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && saveToken()}
-              placeholder="••••••••••••"
-            />
-            <button className="sg-btn sg-btn--primary" onClick={saveToken}>
-              Anmelden
-            </button>
-            {error && <p className="sg-error">{error}</p>}
+            <a className="sg-btn sg-btn--primary sg-btn--link" href="/pair">
+              Code von Hand eingeben
+            </a>
           </div>
         </main>
       </>
@@ -187,17 +215,36 @@ export default function ControlPage() {
           />
         ))}
 
-        <footer className="sg-footer">
-          <button
-            className="sg-linkbtn"
-            onClick={() => {
-              window.localStorage.removeItem(TOKEN_KEY);
-              setToken(null);
-            }}
-          >
-            Abmelden
-          </button>
-        </footer>
+        {devices.length > 0 && (
+          <section className="sg-devices">
+            <h2 className="sg-devices-title">Gekoppelte Geräte</h2>
+            {devices.map((d) => (
+              <div key={d.id} className="sg-device">
+                <div className="sg-device-info">
+                  <span className="sg-device-name">
+                    {d.name}
+                    {d.isSelf && <span className="sg-self">dieses Gerät</span>}
+                  </span>
+                  <span className="sg-device-meta">
+                    gekoppelt am {formatDate(d.createdAt)}
+                    {d.lastSeenAt && ` · zuletzt ${formatDate(d.lastSeenAt)}`}
+                  </span>
+                </div>
+                <button
+                  className="sg-linkbtn sg-linkbtn--danger"
+                  disabled={busyId === d.id}
+                  onClick={() => revokeDevice(d.id, d.isSelf)}
+                >
+                  {d.isSelf ? "Abmelden" : "Entfernen"}
+                </button>
+              </div>
+            ))}
+            <p className="sg-devices-hint">
+              Handy verloren? Am PC im Tray-Menü <strong>Alle Handys abmelden</strong>{" "}
+              wählen — das geht auch ohne dieses Gerät.
+            </p>
+          </section>
+        )}
       </main>
     </>
   );
@@ -372,6 +419,14 @@ function formatMs(ms: number) {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  });
 }
 
 /** Balken relativ zu 10 Minuten – rein visuell, deckelt bei 100%. */
@@ -552,6 +607,37 @@ function Styles() {
         appearance: none; border: 0; background: none; color: var(--muted);
         font-family: inherit; font-size: 13px; cursor: pointer; padding: 10px;
       }
+      .sg-linkbtn--danger { color: var(--danger); }
+      .sg-linkbtn:disabled { opacity: .4; cursor: not-allowed; }
+
+      .sg-btn--link { display: block; text-align: center; text-decoration: none; }
+
+      .sg-devices {
+        margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line);
+      }
+      .sg-devices-title {
+        margin: 0 0 12px; font-size: 13px; font-weight: 600;
+        color: var(--muted); letter-spacing: .04em;
+      }
+      .sg-device {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line);
+      }
+      .sg-device:last-of-type { border-bottom: 0; }
+      .sg-device-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .sg-device-name {
+        font-size: 14px; font-weight: 550;
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      }
+      .sg-self {
+        font-size: 11px; font-weight: 500; color: var(--muted);
+        background: var(--surface-2); padding: 2px 7px; border-radius: 100px;
+      }
+      .sg-device-meta { font-size: 12px; color: var(--muted); }
+      .sg-devices-hint {
+        margin: 14px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5;
+      }
+      .sg-devices-hint strong { color: var(--text); font-weight: 600; }
     `}</style>
   );
 }
